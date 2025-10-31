@@ -1,0 +1,207 @@
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+const path = require("path");
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+const SECRET_KEY = "your_secret_key";
+
+app.use(cors());
+app.use(bodyParser.json());
+
+const users = [
+  { id: 1, username: "admin", password: bcrypt.hashSync("admin123", 8), role: "admin" },
+  { id: 2, username: "moderator", password: bcrypt.hashSync("mod123", 8), role: "moderator" },
+  { id: 3, username: "user", password: bcrypt.hashSync("user123", 8), role: "user" }
+];
+
+function verifyToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "No token provided" });
+  jwt.verify(token, SECRET_KEY, (err, decoded) => {
+    if (err) return res.status(403).json({ message: "Invalid token" });
+    req.userId = decoded.id;
+    next();
+  });
+}
+
+function checkRole(roles) {
+  return (req, res, next) => {
+    const user = users.find(u => u.id === req.userId);
+    if (!user || !roles.includes(user.role)) return res.status(403).json({ message: "Access denied" });
+    next();
+  };
+}
+
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
+  const user = users.find(u => u.username === username);
+  if (!user) return res.status(404).json({ message: "User not found" });
+  const passwordIsValid = bcrypt.compareSync(password, user.password);
+  if (!passwordIsValid) return res.status(401).json({ message: "Invalid password" });
+  const token = jwt.sign({ id: user.id, role: user.role }, SECRET_KEY, { expiresIn: "1h" });
+  res.json({ token, username: user.username, role: user.role });
+});
+
+app.get("/profile", verifyToken, (req, res) => {
+  const user = users.find(u => u.id === req.userId);
+  res.json({ id: user.id, username: user.username, role: user.role });
+});
+
+app.get("/admin", verifyToken, checkRole(["admin"]), (req, res) => {
+  res.json({ message: "Welcome Admin!" });
+});
+
+app.get("/moderator", verifyToken, checkRole(["admin", "moderator"]), (req, res) => {
+  res.json({ message: "Welcome Moderator!" });
+});
+
+app.use(express.static(path.join(__dirname, "client", "build")));
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "client", "build", "index.html"));
+});
+
+app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+import React, { useState, useEffect } from "react";
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import axios from "axios";
+
+function Login({ setAuth, setRole }) {
+  const [formData, setFormData] = useState({ username: "", password: "" });
+  const [message, setMessage] = useState("");
+
+  const handleChange = e => setFormData({ ...formData, [e.target.name]: e.target.value });
+
+  const handleSubmit = async e => {
+    e.preventDefault();
+    try {
+      const response = await axios.post("/login", formData);
+      localStorage.setItem("token", response.data.token);
+      setAuth(true);
+      setRole(response.data.role);
+    } catch (err) {
+      setMessage(err.response?.data?.message || "Login failed");
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: "400px", margin: "50px auto" }}>
+      <h2>Login</h2>
+      <form onSubmit={handleSubmit}>
+        <div>
+          <label>Username:</label>
+          <input type="text" name="username" value={formData.username} onChange={handleChange} required />
+        </div>
+        <div style={{ marginTop: "10px" }}>
+          <label>Password:</label>
+          <input type="password" name="password" value={formData.password} onChange={handleChange} required />
+        </div>
+        <button style={{ marginTop: "20px" }} type="submit">Login</button>
+      </form>
+      {message && <p style={{ marginTop: "20px" }}>{message}</p>}
+    </div>
+  );
+}
+
+function Profile() {
+  const [profile, setProfile] = useState(null);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      const token = localStorage.getItem("token");
+      if (!token) return setMessage("You need to login first");
+      try {
+        const response = await axios.get("/profile", { headers: { Authorization: `Bearer ${token}` } });
+        setProfile(response.data);
+      } catch (err) {
+        setMessage(err.response?.data?.message || "Failed to fetch profile");
+      }
+    };
+    fetchProfile();
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    window.location.reload();
+  };
+
+  if (!profile) return <p>{message}</p>;
+
+  return (
+    <div style={{ maxWidth: "400px", margin: "50px auto" }}>
+      <h2>Profile</h2>
+      <p>ID: {profile.id}</p>
+      <p>Username: {profile.username}</p>
+      <p>Role: {profile.role}</p>
+      <button onClick={handleLogout}>Logout</button>
+    </div>
+  );
+}
+
+function AdminPage() {
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    const fetchData = async () => {
+      const token = localStorage.getItem("token");
+      try {
+        const res = await axios.get("/admin", { headers: { Authorization: `Bearer ${token}` } });
+        setMessage(res.data.message);
+      } catch (err) {
+        setMessage(err.response?.data?.message || "Access denied");
+      }
+    };
+    fetchData();
+  }, []);
+  return <div style={{ maxWidth: "400px", margin: "50px auto" }}><h2>{message}</h2></div>;
+}
+
+function ModeratorPage() {
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    const fetchData = async () => {
+      const token = localStorage.getItem("token");
+      try {
+        const res = await axios.get("/moderator", { headers: { Authorization: `Bearer ${token}` } });
+        setMessage(res.data.message);
+      } catch (err) {
+        setMessage(err.response?.data?.message || "Access denied");
+      }
+    };
+    fetchData();
+  }, []);
+  return <div style={{ maxWidth: "400px", margin: "50px auto" }}><h2>{message}</h2></div>;
+}
+
+function ProtectedRoute({ auth, roles, userRole, children }) {
+  if (!auth) return <Navigate to="/login" />;
+  if (roles && !roles.includes(userRole)) return <Navigate to="/" />;
+  return children;
+}
+
+export default function App() {
+  const [auth, setAuth] = useState(!!localStorage.getItem("token"));
+  const [role, setRole] = useState(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (token && !role) {
+      axios.get("/profile", { headers: { Authorization: `Bearer ${token}` } }).then(res => setRole(res.data.role));
+    }
+  }, [role]);
+
+  return (
+    <Router>
+      <Routes>
+        <Route path="/login" element={<Login setAuth={setAuth} setRole={setRole} />} />
+        <Route path="/" element={<ProtectedRoute auth={auth}><Profile /></ProtectedRoute>} />
+        <Route path="/admin" element={<ProtectedRoute auth={auth} roles={["admin"]} userRole={role}><AdminPage /></ProtectedRoute>} />
+        <Route path="/moderator" element={<ProtectedRoute auth={auth} roles={["admin","moderator"]} userRole={role}><ModeratorPage /></ProtectedRoute>} />
+      </Routes>
+    </Router>
+  );
+}
